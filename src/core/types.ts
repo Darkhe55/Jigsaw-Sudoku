@@ -149,6 +149,20 @@ export interface GameMeta {
   interactionHint?: string
 }
 
+/** 可选「区域/宫」编辑层：自定义编辑器提供「画宫 / 填数」两个图层 */
+export interface RegionLayerSpec {
+  /** 图层按钮文案（默认「画宫」） */
+  label?: string
+  /** 区域号上限（含） */
+  maxRegion(w: number, h: number): number
+  /** 初始区域布局（新建题板 / 重新生成网格时使用） */
+  initial(w: number, h: number): Array<number | null>
+  /** 区域号显示文案（0 基；默认数字/字母） */
+  labelFor?(v: number | null): string
+  /** 编辑器提示补充 */
+  hint?: string
+}
+
 /** 自定义题板支持：核心提供通用编辑器，游戏只需声明「值集合」和编解码 */
 export interface CustomSupport {
   /**
@@ -186,8 +200,16 @@ export interface CustomSupport {
   cellClass?(v: number | null): string
   /** 自定义题板提示文字 */
   hint: string
+  /** 可选：额外的「区域/宫」编辑层（异形数独用） */
+  regionLayer?: RegionLayerSpec
   /** 把已保存的题面还原成编辑器网格（编辑功能用）；不支持则省略或返回 null */
-  toGrid?(p: Puzzle): { width: number; height: number; grid: Array<number | null> } | null
+  toGrid?(p: Puzzle): {
+    width: number
+    height: number
+    grid: Array<number | null>
+    /** 区域层（有 regionLayer 时使用） */
+    regions?: Array<number | null>
+  } | null
 
   /** —— edge 模式专用 —— */
   /** 边的点击循环值序列 */
@@ -208,8 +230,14 @@ export interface CustomSupport {
     existingId?: string,
   ): Puzzle
 
-  /** 从编辑器网格构造 Puzzle（existingId 给稳定 id 用） */
-  makePuzzle(w: number, h: number, grid: Array<number | null>, existingId?: string): Puzzle
+  /** 从编辑器网格构造 Puzzle（existingId 给稳定 id 用；regions 供「画宫」图层使用） */
+  makePuzzle(
+    w: number,
+    h: number,
+    grid: Array<number | null>,
+    existingId?: string,
+    regions?: Array<number | null>,
+  ): Puzzle
   /** 把题面序列化成 library 条目字段（JSON 友好） */
   encodePuzzle(p: Puzzle): Record<string, unknown>
   /** 从 library 条目还原题面；不合法返回 null */

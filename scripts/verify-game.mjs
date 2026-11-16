@@ -117,10 +117,37 @@ if (afterUndo.changed !== 0) {
 
 const customDisabled = await page.locator('#btn-custom').isDisabled()
 console.log('custom disabled:', customDisabled)
-if (!customDisabled) {
+if (customDisabled) {
   failures++
-  console.error('FAIL: 异形数独 应关闭自定义题板')
+  console.error('FAIL: 异形数独 应支持自定义题板（画宫 / 填数）')
 }
+
+// 自定义题板：4×4 / 6×6 画宫 + 填数（区域层）
+await page.click('#btn-custom')
+await page.waitForTimeout(150)
+for (const n of [4, 6]) {
+  await page.fill('#custom-w', String(n))
+  await page.fill('#custom-h', String(n))
+  await page.click('#custom-regen')
+  await page.waitForTimeout(80)
+  const info = await page.evaluate(() => ({
+    cells: document.querySelectorAll('.custom-cell').length,
+    layers: document.querySelectorAll('#custom-layers [data-layer]').length,
+  }))
+  console.log(`custom ${n}x${n}:`, info)
+  if (info.cells !== n * n || info.layers !== 2) {
+    failures++
+    console.error(`FAIL: 自定义 ${n}×${n} 题板渲染异常（应有 ${n * n} 格 / 2 个图层）`)
+  }
+}
+await page.click('#custom-close')
+await page.waitForTimeout(80)
+
+// 内置题尺寸覆盖
+const sizes = await page.evaluate(() =>
+  [...new Set(window.__game.adapter.builtinPuzzles.map((p) => `${p.width}x${p.height}`))].sort(),
+)
+console.log('builtin sizes:', sizes)
 
 await page.screenshot({ path: 'output/playwright/05-verified.png', fullPage: true })
 console.log('pageErrors:', errors)

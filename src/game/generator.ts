@@ -1,21 +1,26 @@
 /**
- * 异形数独题库生成器
+ * 异形数独题库生成器（任意 N / 不规则宫）
  *
- * 1. 用随机哈密顿路径把 81 格切成 9 段，每段 9 格且四连通；
- * 2. 用回溯求解器为不规则宫找完整终盘（无解则换路径重试）；
- * 3. 随机挖空并保持唯一解。
+ * 1. 用随机哈密顿路径把 N² 格切成 N 段，每段 N 格且四连通（不规则宫）；
+ * 2. 用回溯求解器为不规则宫找完整终盘（无解 / 超时则换路径重试）；
+ * 3. 批量挖空后用唯一解复核，不唯一就逐步回填预填。
+ *
+ * 旧 9×9 内置题保留在 puzzles-data.ts 中不再重生成；
+ * npm run gen 只生成 4×4 / 6×6 / 8×8 / 10×10 等新增尺寸到 puzzles-extra-data.ts。
  */
 
 import type { Difficulty } from '../core/types'
-import { standardRegions } from './types.ts'
+import { encodeBoard, encodeCells, standardRegionsOf } from './types.ts'
 import { countSolutions, findSolution } from './solver.ts'
 
 interface GenSpec {
+  n: number
   seed: number
   difficulty: Difficulty
   name: string
   series: string
-  maxRemove: number
+  /** 挖空比例（相对格数） */
+  digRatio: number
 }
 
 function mulberry32(seed: number): () => number {
@@ -29,63 +34,88 @@ function mulberry32(seed: number): () => number {
   }
 }
 
-function makeRegions(rng: () => number): number[] | null {
-  for (let attempt = 0; attempt < 200; attempt++) {
-    const visited = new Uint8Array(81)
+function shuffle<T>(arr: T[], rng: () => number): T[] {
+  const out = arr.slice()
+  for (let i = out.length - 1; i > 0; i--) {
+    const j = Math.floor(rng() * (i + 1))
+    ;[out[i], out[j]] = [out[j]!, out[i]!]
+  }
+  return out
+}
+
+/** 随机哈密顿路径：切成 n 段，每段 n 格（四连通的不规则宫） */
+function makeRegions(n: number, rng: () => number): number[] | null {
+  const size = n * n
+  for (let attempt = 0; attempt < 60; attempt++) {
+    const visited = new Uint8Array(size)
     const path: number[] = []
-    const start = Math.floor(rng() * 81)
+    const start = Math.floor(rng() * size)
     let steps = 0
     const dfs = (i: number): boolean => {
-      if (++steps > 30_000) return false
+      if (++steps > 60_000) return false
       visited[i] = 1
       path.push(i)
-      if (path.length === 81) return true
-      const x = i % 9
-      const y = (i / 9) | 0
+      if (path.length === size) return true
+      const x = i % n
+      const y = (i / n) | 0
       const next: Array<[number, number]> = []
-      for (const n of [x > 0 ? i - 1 : -1, x < 8 ? i + 1 : -1, y > 0 ? i - 9 : -1, y < 8 ? i + 9 : -1]) {
-        if (n < 0 || visited[n]) continue
-        const nx = n % 9
-        const ny = (n / 9) | 0
+      for (const nb of [
+        x > 0 ? i - 1 : -1,
+        x < n - 1 ? i + 1 : -1,
+        y > 0 ? i - n : -1,
+        y < n - 1 ? i + n : -1,
+      ]) {
+        if (nb < 0 || visited[nb]) continue
+        const nx = nb % n
+        const ny = (nb / n) | 0
         let degree = 0
         for (const q of [
-          nx > 0 ? n - 1 : -1,
-          nx < 8 ? n + 1 : -1,
-          ny > 0 ? n - 9 : -1,
-          ny < 8 ? n + 9 : -1,
+          nx > 0 ? nb - 1 : -1,
+          nx < n - 1 ? nb + 1 : -1,
+          ny > 0 ? nb - n : -1,
+          ny < n - 1 ? nb + n : -1,
         ]) {
           if (q >= 0 && !visited[q]) degree++
         }
-        next.push([degree + rng() * 0.9, n])
+        next.push([degree + rng() * 0.9, nb])
       }
       next.sort((a, b) => a[0] - b[0])
-      for (const [, n] of next) if (dfs(n)) return true
+      for (const [, nb] of next) if (dfs(nb)) return true
       path.pop()
       visited[i] = 0
       return false
     }
     if (!dfs(start)) continue
-    const regions = new Array<number>(81).fill(0)
-    for (let p = 0; p < 81; p++) regions[path[p]!] = Math.floor(p / 9)
+    const regions = new Array<number>(size).fill(0)
+    for (let p = 0; p < size; p++) regions[path[p]!] = Math.floor(p / n)
     return regions
   }
   return null
 }
 
-function irregularity(regions: number[]): number {
-  const base = standardRegions()
+function irregularity(regions: number[], n: number): number {
+  const base = standardRegionsOf(n)
   let diff = 0
-  for (let i = 0; i < 81; i++) if (regions[i] !== base[i]) diff++
+  for (let i = 0; i < regions.length; i++) if (regions[i] !== base[i]) diff++
   return diff
 }
 
-const SPECS: GenSpec[] = [
-  { seed: 0x4a534401, difficulty: 'easy', name: '初识异形', series: '入门', maxRemove: 40 },
-  { seed: 0x4a534402, difficulty: 'easy', name: '宫墙初变', series: '入门', maxRemove: 42 },
-  { seed: 0x4a534403, difficulty: 'medium', name: '不规则回廊', series: '进阶', maxRemove: 48 },
-  { seed: 0x4a534404, difficulty: 'medium', name: '错位九宫', series: '进阶', maxRemove: 50 },
-  { seed: 0x4a534405, difficulty: 'hard', name: '异形之壁', series: '挑战', maxRemove: 54 },
-  { seed: 0x4a534406, difficulty: 'hard', name: '终局异形', series: '挑战', maxRemove: 56 },
+/** 旧 9×9 内置题规格（保留在 puzzles-data.ts 中，不再重生成） */
+const LEGACY_SPECS: GenSpec[] = [
+  { n: 9, seed: 0x4a534401, difficulty: 'easy', name: '初识异形', series: '入门', digRatio: 0.5 },
+  { n: 9, seed: 0x4a534402, difficulty: 'easy', name: '宫墙初变', series: '入门', digRatio: 0.52 },
+  { n: 9, seed: 0x4a534403, difficulty: 'medium', name: '不规则回廊', series: '进阶', digRatio: 0.58 },
+  { n: 9, seed: 0x4a534404, difficulty: 'medium', name: '错位九宫', series: '进阶', digRatio: 0.6 },
+  { n: 9, seed: 0x4a534405, difficulty: 'hard', name: '异形之壁', series: '挑战', digRatio: 0.64 },
+  { n: 9, seed: 0x4a534406, difficulty: 'hard', name: '终局异形', series: '挑战', digRatio: 0.66 },
+]
+
+/** 多尺寸异形内置题规格 */
+const EXTRA_SPECS: GenSpec[] = [
+  { n: 4, seed: 0x4a554401, difficulty: 'easy', name: '四宫异形', series: '尺寸', digRatio: 0.5 },
+  { n: 4, seed: 0x4a554402, difficulty: 'easy', name: '四方错位', series: '尺寸', digRatio: 0.55 },
+  { n: 6, seed: 0x4a554601, difficulty: 'easy', name: '六宫异形', series: '尺寸', digRatio: 0.5 },
+  { n: 6, seed: 0x4a554602, difficulty: 'medium', name: '六宫回廊', series: '尺寸', digRatio: 0.56 },
 ]
 
 export interface GeneratedPuzzle {
@@ -100,52 +130,59 @@ export interface GeneratedPuzzle {
 }
 
 function attempt(spec: GenSpec, rng: () => number): GeneratedPuzzle | null {
-  const regions = makeRegions(rng)
+  const n = spec.n
+  const size = n * n
+  const regions = makeRegions(n, rng)
   if (!regions) return null
-  if (irregularity(regions) < 30) return null
-  const empty = new Array<number>(81).fill(0)
-  const solution = findSolution(empty, regions, 500_000)
+  if (irregularity(regions, n) < Math.round(size * 0.3)) return null
+  const solution = findSolution(new Array<number>(size).fill(0), regions, n > 9 ? 600_000 : 300_000, n)
   if (!solution) return null
 
-  const givens = solution.slice()
-  let removed = 0
-  const order = Array.from({ length: 81 }, (_, i) => i)
-  for (let i = order.length - 1; i > 0; i--) {
-    const j = Math.floor(rng() * (i + 1))
-    ;[order[i], order[j]] = [order[j]!, order[i]!]
+  const order = shuffle(Array.from({ length: size }, (_, i) => i), rng)
+  const removeCount = Math.max(0, Math.min(size - 4, Math.round(size * spec.digRatio)))
+  const removed = new Set(order.slice(0, removeCount))
+  const givens = solution.map((v, i) => (removed.has(i) ? 0 : v))
+  const budget = n > 9 ? 150_000 : 300_000
+  let verify = countSolutions(givens, regions, 2, budget, n)
+  for (let k = removeCount - 1; k >= 0 && (verify.timedOut || verify.count !== 1); k--) {
+    givens[order[k]!] = solution[order[k]!]!
+    verify = countSolutions(givens, regions, 2, budget, n)
   }
-  for (const i of order) {
-    if (removed >= spec.maxRemove) break
-    const backup = givens[i]!
-    givens[i] = 0
-    const out = countSolutions(givens, regions, 2, 300_000)
-    if (out.count === 1 && !out.timedOut) removed++
-    else givens[i] = backup
-  }
+  if (verify.timedOut || verify.count !== 1) return null
 
   return {
-    id: `jigsaw-${spec.seed.toString(36)}`,
+    id: `jigsaw-${n}x${n}-${spec.seed.toString(36)}`,
     name: spec.name,
-    width: 9,
-    height: 9,
+    width: n,
+    height: n,
     difficulty: spec.difficulty,
     series: spec.series,
-    board: `${givens.join('')}|${regions.join('')}`,
-    solution: solution.join(''),
+    board: encodeBoard(givens, regions),
+    solution: encodeCells(solution),
   }
 }
 
-export function generatePuzzles(): GeneratedPuzzle[] {
+function run(specs: GenSpec[], tag: string): GeneratedPuzzle[] {
   const out: GeneratedPuzzle[] = []
-  for (const spec of SPECS) {
+  for (const spec of specs) {
     const t0 = Date.now()
     const rng = mulberry32(spec.seed)
     let made: GeneratedPuzzle | null = null
-    for (let tries = 0; tries < 80 && !made; tries++) made = attempt(spec, rng)
-    if (!made) throw new Error(`[异形数独 gen] ${spec.name} 生成失败`)
+    for (let tries = 0; tries < 12 && !made; tries++) made = attempt(spec, rng)
+    if (!made) throw new Error(`[${tag}] ${spec.name}（${spec.n}×${spec.n}）生成失败`)
     const clues = made.board.split('|')[0]!.split('').filter((c) => c !== '0').length
-    console.log(`[异形数独 gen] ${spec.name}：预填 ${clues}，${Date.now() - t0}ms`)
+    console.log(`[${tag}] ${made.name}（${spec.n}×${spec.n}）：预填 ${clues}，${Date.now() - t0}ms`)
     out.push(made)
   }
   return out
+}
+
+/** 旧 9×9 内置异形题（正常不重新生成，保留 puzzles-data.ts） */
+export function generatePuzzles(): GeneratedPuzzle[] {
+  return run(LEGACY_SPECS, '异形数独 gen')
+}
+
+/** 新增多尺寸异形内置题（4 / 6 / 8 / 10） */
+export function generateExtraPuzzles(): GeneratedPuzzle[] {
+  return run(EXTRA_SPECS, '异形数独 gen 多尺寸')
 }

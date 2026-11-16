@@ -1,21 +1,24 @@
 /**
- * 数独 —— 题库加载
+ * 异形数独 —— 题库加载
  *
- * 题库由两部分组成：
- *   - RAW_PUZZLES：npm run gen 生成的内置题（9×9，会被重新生成覆盖）
+ * 题库由三部分组成：
+ *   - RAW_PUZZLES：旧 9×9 内置异形题（puzzles-data.ts，保持稳定）
+ *   - EXTRA_PUZZLES：npm run gen 生成的多尺寸内置题（puzzles-extra-data.ts：4/6/12 等）
  *   - IMPORTED_PUZZLES：scripts/import-image.mjs --append 写入的识图题
- *     （单独文件，npm run gen 不会覆盖；支持任意 N / 任意宫形）
+ *     （单独文件，npm run gen 不会覆盖；支持任意 N / 任意不规则宫）
  *
- * 题面编码见 types.ts：givens|regions，每格 1 个 36 进制字符，
- * 因此 9×9（值 1..9 / 宫 0..8）与 16×16（值 1..16 / 宫 0..15）共用同一套解析。
+ * 题面编码见 types.ts：givens|regions，每格 1 个 36 进制字符；
+ * 宫号 0..35，宫数可以是任意 1..36（不要求等于 N）。
  */
 
 import type { Difficulty, GameState, Puzzle } from '../core/types'
 import { RAW_PUZZLES } from './puzzles-data.ts'
+import { EXTRA_PUZZLES } from './puzzles-extra-data.ts'
 import { IMPORTED_PUZZLES } from './imported-puzzles.ts'
 import {
   decodeBoard,
   decodeCells,
+  isValidSudokuSize,
   puzzleSize,
   regionCountOf,
   type SudokuPuzzle,
@@ -36,22 +39,23 @@ export interface RawPuzzle {
 /** 内置题 + 识图导入题 */
 export const ALL_RAW_PUZZLES: RawPuzzle[] = [
   ...(RAW_PUZZLES as RawPuzzle[]),
+  ...(EXTRA_PUZZLES as RawPuzzle[]),
   ...(IMPORTED_PUZZLES as RawPuzzle[]),
 ]
 
 /**
  * 把题库条目解码成可玩题面。
- * 接受任意正方形边长 4..36（9 / 14 / 16 都可以），宫数 1..N。
+ * 接受任意正方形边长 4..25，宫数 1..36（不要求等于 N）。
  * @param editable 是否允许在题库里编辑/删除（图片导入的题面为 false）
  */
 export function decodePuzzle(raw: RawPuzzle, editable = true): SudokuPuzzle | null {
   const n = puzzleSize(raw)
-  if (!n || n < 4 || n > 36) return null
+  if (!isValidSudokuSize(n)) return null
   const size = n * n
-  const decoded = decodeBoard(raw.board, size, n, n)
+  const decoded = decodeBoard(raw.board, size, n, 36)
   if (!decoded) return null
   const regionCount = regionCountOf(decoded.regions)
-  if (regionCount < 1 || regionCount > n) return null
+  if (regionCount < 1 || regionCount > 36) return null
   return {
     id: raw.id,
     name: raw.name,
@@ -66,6 +70,7 @@ export function decodePuzzle(raw: RawPuzzle, editable = true): SudokuPuzzle | nu
 
 export const builtinPuzzles: Puzzle[] = [
   ...(RAW_PUZZLES as RawPuzzle[]).map((raw) => decodePuzzle(raw, false)),
+  ...(EXTRA_PUZZLES as RawPuzzle[]).map((raw) => decodePuzzle(raw, false)),
   ...(IMPORTED_PUZZLES as RawPuzzle[]).map((raw) => decodePuzzle(raw, false)),
 ].filter((p): p is SudokuPuzzle => p !== null)
 

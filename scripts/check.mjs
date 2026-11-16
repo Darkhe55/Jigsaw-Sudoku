@@ -15,7 +15,11 @@ import { decodeBoard, decodeCells, regionCountOf } from '../src/game/types.ts'
 import { isValidSolution, solveByRules } from '../src/game/rules.ts'
 import { countSolutions } from '../src/game/solver.ts'
 
-const FILES = ['src/game/puzzles-data.ts', 'src/game/imported-puzzles.ts'].map((p) => path.resolve(p))
+const FILES = [
+  'src/game/puzzles-data.ts',
+  'src/game/puzzles-extra-data.ts',
+  'src/game/imported-puzzles.ts',
+].map((p) => path.resolve(p))
 
 const ENTRY_RE =
   /\{\s*id:\s*"([^"]+)",\s*name:\s*"([^"]+)",\s*width:\s*(\d+),\s*height:\s*(\d+),\s*difficulty:\s*'([^']+)',\s*series:\s*"([^"]*)",\s*board:\s*"([^"]*)",\s*solution:\s*"([^"]*)"\s*\}/g

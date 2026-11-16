@@ -8,6 +8,9 @@
  *   edge    = 编辑格子之间的边（水平/竖直边，索引顺序见 core/board.ts）
  *   none    = 不支持自定义题板
  *
+ * 额外支持「区域层」（adapter.custom.regionLayer，异形数独用）：
+ *   编辑器提供「画宫 / 填数」两个图层，同一个网格既能画不规则宫、又能填预填数字。
+ *
  * 键盘录入约定（cell/region/picture）：
  *   数字键 0-9 由 adapter.custom.keyForDigit 决定含义；
  *   . / Backspace / Delete 清空；方向键移动；Enter/Tab 下一格；
@@ -15,11 +18,7 @@
  */
 
 import type { GameAdapter, Puzzle } from './types'
-import {
-  edgeCount,
-  horizontalEdgeIndex,
-  verticalEdgeIndex,
-} from './board'
+import { edgeCount, horizontalEdgeIndex, regionFill, verticalEdgeIndex } from './board'
 
 export interface CustomHost {
   setStatus(text: string, tone?: 'ok' | 'bad' | 'solving' | ''): void
@@ -35,6 +34,9 @@ export class CustomEditor {
   private h = 5
   private grid: Array<number | null> = []
   private edges: Array<number | null> = []
+  /** 区域层：每格宫号（0 基；null = 未分配） */
+  private regions: Array<number | null> = []
+  private layer: 'value' | 'region' = 'value'
   private cursor = 0
   private adapter: GameAdapter
   private editingId: string | null = null
@@ -48,6 +50,24 @@ export class CustomEditor {
     return this.adapter.custom.mode ?? 'cell'
   }
 
+  private regionLayer() {
+    return this.adapter.custom.regionLayer
+  }
+
+  private maxRegion(): number {
+    const spec = this.regionLayer()
+    if (!spec) return 0
+    const max = spec.maxRegion(this.w, this.h)
+    return Math.max(1, Math.min(36, Math.floor(max) || 36))
+  }
+
+  private regionLabel(v: number | null): string {
+    if (v == null) return ''
+    const spec = this.regionLayer()
+    if (spec?.labelFor) return spec.labelFor(v)
+    return v <= 9 ? String(v) : String.fromCharCode(65 + (v - 10))
+  }
+
   isOpen(): boolean {
     const panel = document.getElementById('custom-editor')
     return !!panel && !panel.hidden
@@ -58,17 +78,46 @@ export class CustomEditor {
     if (panel) panel.hidden = true
   }
 
-  // —— 单元格模式 ——
+  // —— 单元格 / 区域图层 ——
+
+  private cellClassOf(value: number | null): string {
+    const cls = this.adapter.custom.cellClass?.(value) ?? ''
+    return `custom-cell${cls ? ` ${cls}` : ''}${value === null ? ' empty' : ''}`
+  }
+
+  private cellInner(value: number | null, region: number | null): string {
+    const valueText = this.adapter.custom.cellLabel(value)
+    if (!this.regionLayer()) return valueText
+    return (
+      `<span class="cv">${valueText}</span>` +
+      `<span class="cr">${this.regionLabel(region)}</span>`
+    )
+  }
+
+  /** 只重绘一格（保留选中态） */
+  private paintCell(i: number): void {
+    const btn = document.querySelector<HTMLButtonElement>(`.custom-cell[data-i="${i}"]`)
+    if (!btn) return
+    const value = this.grid[i] ?? null
+    const region = this.regionLayer() ? (this.regions[i] ?? null) : null
+    btn.innerHTML = this.cellInner(value, region)
+    btn.className = `${this.cellClassOf(value)}${i === this.cursor ? ' selected' : ''}`
+    if (this.regionLayer()) {
+      if (region === null) btn.style.background = ''
+      else btn.style.background = regionFill(region)
+    }
+  }
 
   private setCell(i: number, value: number | null): void {
     if (i < 0 || i >= this.grid.length) return
     this.grid[i] = value
-    const btn = document.querySelector<HTMLButtonElement>(`.custom-cell[data-i="${i}"]`)
-    if (!btn) return
-    btn.textContent = this.adapter.custom.cellLabel(value)
-    btn.classList.toggle('empty', value === null)
-    const cls = this.adapter.custom.cellClass?.(value) ?? ''
-    btn.className = `custom-cell${cls ? ` ${cls}` : ''}${value === null ? ' empty' : ''}`
+    this.paintCell(i)
+  }
+
+  private setRegion(i: number, value: number | null): void {
+    if (i < 0 || i >= this.regions.length) return
+    this.regions[i] = value
+    this.paintCell(i)
   }
 
   private selectCell(i: number): void {
@@ -94,8 +143,14 @@ export class CustomEditor {
     const wEl = document.getElementById('custom-w') as HTMLInputElement | null
     const hEl = document.getElementById('custom-h') as HTMLInputElement | null
     const meta = this.adapter.meta
-    const w = Math.max(meta.customMinW, Math.min(meta.customMaxW, Number(wEl?.value) || 5))
-    const h = Math.max(meta.customMinH, Math.min(meta.customMaxH, Number(hEl?.value) || 5))
+    const w = Math.max(
+      meta.customMinW,
+      Math.min(meta.customMaxW, Number(wEl?.value) || meta.customMinW),
+    )
+    const h = Math.max(
+      meta.customMinH,
+      Math.min(meta.customMaxH, Number(hEl?.value) || meta.customMinH),
+    )
     if (wEl) wEl.value = String(w)
     if (hEl) hEl.value = String(h)
     return { w, h }
@@ -111,6 +166,49 @@ export class CustomEditor {
   private cycleFor(w: number, h: number): Array<number | null> {
     const custom = this.adapter.custom
     return custom.valueCycleFor?.(w, h) ?? custom.valueCycle
+  }
+
+  /** 初始化/重置区域层 */
+  private resetRegions(w: number, h: number): void {
+    const spec = this.regionLayer()
+    if (!spec) {
+      this.regions = []
+      return
+    }
+    this.regions = spec.initial(w, h).slice()
+    if (this.regions.length !== w * h) {
+      this.regions = Array.from({ length: w * h }, (_, i) => i % Math.max(1, Math.min(w, h)))
+    }
+  }
+
+  /** 「画宫 / 填数」图层切换按钮 */
+  private renderLayers(): void {
+    const el = document.getElementById('custom-layers')
+    if (!el) return
+    if (!this.regionLayer()) {
+      el.hidden = true
+      el.innerHTML = ''
+      return
+    }
+    el.hidden = false
+    el.innerHTML = [
+      `<button type="button" class="btn small${this.layer === 'region' ? ' primary' : ''}" data-layer="region">画宫</button>`,
+      `<button type="button" class="btn small${this.layer === 'value' ? ' primary' : ''}" data-layer="value">填数</button>`,
+    ].join('')
+    el.querySelectorAll<HTMLButtonElement>('[data-layer]').forEach((btn) => {
+      btn.addEventListener('click', () => {
+        this.layer = btn.dataset.layer === 'region' ? 'region' : 'value'
+        this.renderLayers()
+        this.renderGrid()
+        const spec = this.regionLayer()
+        this.host.message(
+          this.layer === 'region'
+            ? `画宫模式：点击/键盘设置宫号（0..${this.maxRegion() - 1}，字母键 A..Z 表示 10 以上）。${spec?.hint ?? ''}`
+            : `填数模式：${this.adapter.custom.hint}`,
+        )
+        document.getElementById('custom-grid')?.focus()
+      })
+    })
   }
 
   // —— 边模式 ——
@@ -190,20 +288,33 @@ export class CustomEditor {
     if (this.grid.length !== w * h) {
       this.grid = new Array<number | null>(w * h).fill(null)
     }
+    if (this.regionLayer() && this.regions.length !== w * h) {
+      this.resetRegions(w, h)
+    }
+    // 大尺寸题板（如 16..25）自动缩小格子，保证在侧栏里可点
+    const cellPx = w <= 9 ? 36 : w <= 12 ? 32 : w <= 16 ? 28 : 24
     grid.className = 'custom-grid'
-    grid.style.gridTemplateColumns = `repeat(${w}, 36px)`
+    grid.style.gridTemplateColumns = `repeat(${w}, ${cellPx}px)`
+    const hasRegion = !!this.regionLayer()
     grid.innerHTML = this.grid
       .map((v, i) => {
-        const label = this.adapter.custom.cellLabel(v)
-        const cls = this.adapter.custom.cellClass?.(v) ?? ''
+        const region = hasRegion ? (this.regions[i] ?? null) : null
         const sel = i === this.cursor ? ' selected' : ''
-        return `<button type="button" class="custom-cell${cls ? ` ${cls}` : ''}${v === null ? ' empty' : ''}${sel}" data-i="${i}">${label}</button>`
+        const style =
+          hasRegion && region !== null ? ` style="background:${regionFill(region)}"` : ''
+        return `<button type="button" class="${this.cellClassOf(v)}${sel}" data-i="${i}"${style}>${this.cellInner(v, region)}</button>`
       })
       .join('')
     grid.querySelectorAll<HTMLButtonElement>('.custom-cell').forEach((btn) => {
       btn.addEventListener('click', () => {
         const i = Number(btn.dataset.i)
         this.selectCell(i)
+        if (this.layer === 'region' && hasRegion) {
+          const max = this.maxRegion()
+          const cur = this.regions[i] ?? -1
+          this.setRegion(i, (cur + 1) % max)
+          return
+        }
         const cur = this.grid[i] ?? null
         const cycle = this.cycleFor(w, h)
         const pos = cycle.indexOf(cur)
@@ -215,6 +326,7 @@ export class CustomEditor {
       })
     })
     grid.tabIndex = 0
+    this.renderLayers()
   }
 
   open(): void {
@@ -234,6 +346,9 @@ export class CustomEditor {
     if (wEl) wEl.value = String(this.w)
     if (hEl) hEl.value = String(this.h)
     if (this.cursor >= this.w * this.h) this.cursor = 0
+    if (this.regionLayer() && this.regions.length !== this.w * this.h) {
+      this.resetRegions(this.w, this.h)
+    }
     this.renderGrid()
     const editing = this.editingId ? `正在编辑「${this.editingName ?? this.editingId}」。` : ''
     this.host.message(`${editing}键盘：方向键移动 · ${this.adapter.custom.hint}`)
@@ -260,7 +375,14 @@ export class CustomEditor {
     this.w = restored.width
     this.h = restored.height
     this.grid = restored.grid.slice()
+    if (this.regionLayer()) {
+      this.regions =
+        restored.regions && restored.regions.length === this.w * this.h
+          ? restored.regions.slice()
+          : this.regionLayer()!.initial(this.w, this.h).slice()
+    }
     this.cursor = 0
+    this.layer = this.regionLayer() ? 'region' : 'value'
     this.editingId = p.id
     this.editingName = p.name
     const panel = document.getElementById('custom-editor')
@@ -289,7 +411,11 @@ export class CustomEditor {
       this.edges = new Array<number | null>(edgeCount(this.w, this.h)).fill(null)
       this.renderEdgeGrid()
     } else {
-      this.grid = new Array<number | null>(this.w * this.h).fill(null)
+      const { w, h } = this.readSize()
+      this.w = w
+      this.h = h
+      this.grid = new Array<number | null>(w * h).fill(null)
+      if (this.regionLayer()) this.resetRegions(w, h)
       this.cursor = 0
       this.renderGrid()
     }
@@ -313,6 +439,47 @@ export class CustomEditor {
     }
 
     const k = e.key
+
+    // 区域图层：数字/字母直接设置宫号，退格清空
+    if (this.regionLayer() && this.layer === 'region') {
+      if (k === 'Escape') {
+        e.preventDefault()
+        this.close()
+        return true
+      }
+      if (k.length === 1 && /^[0-9a-zA-Z]$/.test(k)) {
+        const v = /[0-9]/.test(k) ? Number(k) : 10 + k.toUpperCase().charCodeAt(0) - 65
+        if (v < this.maxRegion()) {
+          e.preventDefault()
+          this.setRegion(this.cursor, v)
+          this.moveCursor(1, 0)
+          return true
+        }
+      }
+      if (k === '.' || k === 'Backspace' || k === 'Delete' || k === ' ') {
+        e.preventDefault()
+        this.setRegion(this.cursor, null)
+        if (k === 'Backspace') this.moveCursor(-1, 0)
+        else this.moveCursor(1, 0)
+        return true
+      }
+      if (k.startsWith('Arrow')) {
+        e.preventDefault()
+        if (k === 'ArrowLeft') this.moveCursor(-1, 0)
+        else if (k === 'ArrowRight') this.moveCursor(1, 0)
+        else if (k === 'ArrowUp') this.moveCursor(0, -1)
+        else this.moveCursor(0, 1)
+        return true
+      }
+      if (k === 'Enter' || k === 'Tab') {
+        e.preventDefault()
+        if (e.shiftKey) this.moveCursor(-1, 0)
+        else this.moveCursor(1, 0)
+        return true
+      }
+      return false
+    }
+
     if (k >= '0' && k <= '9') {
       const value = this.adapter.custom.keyForDigit(Number(k))
       if (value !== undefined) {
@@ -395,7 +562,13 @@ export class CustomEditor {
         existingId,
       )
     }
-    return this.adapter.custom.makePuzzle(this.w, this.h, this.grid.slice(), existingId)
+    return this.adapter.custom.makePuzzle(
+      this.w,
+      this.h,
+      this.grid.slice(),
+      existingId,
+      this.regionLayer() ? this.regions.slice() : undefined,
+    )
   }
 
   load(): void {
@@ -418,6 +591,16 @@ export class CustomEditor {
       this.renderGrid()
       this.host.message('网格已重置，请先填好内容。', 'bad')
       return
+    }
+    if (this.regionLayer()) {
+      if (this.regions.length !== w * h) {
+        this.resetRegions(w, h)
+        this.renderGrid()
+      }
+      if (this.regions.some((r) => r === null)) {
+        this.host.message('还有格子没有分配宫号，请先在「画宫」模式补全。', 'bad')
+        return
+      }
     }
     const stableId =
       this.editingId ?? `${this.adapter.meta.customIdPrefix}${w}x${h}`
@@ -445,6 +628,10 @@ export class CustomEditor {
       }
     } else if (this.grid.length !== w * h) {
       this.host.message('请先生成网格并填好内容。', 'bad')
+      return
+    }
+    if (this.regionLayer() && this.regions.some((r) => r === null)) {
+      this.host.message('还有格子没有分配宫号，请先在「画宫」模式补全。', 'bad')
       return
     }
     const isEditing = !!this.editingId
