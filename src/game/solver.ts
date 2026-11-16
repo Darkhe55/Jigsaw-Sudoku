@@ -1,12 +1,19 @@
 /**
- * 数独 / 异形数独 —— 位掩码回溯求解器
+ * 数独 —— 回溯求解器（任意 N）
  *
- * 每个未定格维护 9 位候选掩码；落子后从 peers（同行/列/宫）中消去该位。
+ * 先跑规则引擎；推不满再用 MRV（最少候选优先）+ 传播回溯。
+ * 位宽不再固定：候选数用普通 Set/数组计算，9×9 / 14×14 / 16×16 通用。
  */
 
 import type { Puzzle, SolveResult } from '../core/types'
-import { solveByRules } from './rules.ts'
-import type { SudokuPuzzle, SudokuState } from './types.ts'
+import {
+  initialGrid,
+  isValidSolution,
+  makeUnits,
+  propagate,
+  solveByRules,
+} from './rules.ts'
+import { puzzleSize, squareSize, type SudokuPuzzle, type SudokuState } from './types.ts'
 
 export interface CountOutcome {
   count: number
@@ -14,37 +21,12 @@ export interface CountOutcome {
   timedOut: boolean
 }
 
-function buildPeers(regions: ArrayLike<number>): number[][] {
-  const peers: Array<Set<number>> = Array.from({ length: 81 }, () => new Set<number>())
-  const units: number[][] = []
-  for (let y = 0; y < 9; y++) {
-    const row: number[] = []
-    for (let x = 0; x < 9; x++) row.push(y * 9 + x)
-    units.push(row)
+function buildUnitIndex(units: number[][], size: number): number[][] {
+  const unitOf: number[][] = Array.from({ length: size }, () => [])
+  for (let u = 0; u < units.length; u++) {
+    for (const i of units[u]!) if (i >= 0 && i < size) unitOf[i]!.push(u)
   }
-  for (let x = 0; x < 9; x++) {
-    const col: number[] = []
-    for (let y = 0; y < 9; y++) col.push(y * 9 + x)
-    units.push(col)
-  }
-  for (let r = 0; r < 9; r++) {
-    const cells: number[] = []
-    for (let i = 0; i < 81; i++) if (regions[i] === r) cells.push(i)
-    units.push(cells)
-  }
-  for (const unit of units) {
-    for (const a of unit) for (const b of unit) if (a !== b) peers[a]!.add(b)
-  }
-  return peers.map((s) => Array.from(s))
-}
-
-function popcount(x: number): number {
-  let n = 0
-  while (x) {
-    x &= x - 1
-    n++
-  }
-  return n
+  return unitOf
 }
 
 function search(
@@ -52,64 +34,25 @@ function search(
   regions: ArrayLike<number>,
   limit: number,
   maxNodes: number,
+  n: number,
 ): { solutions: number[][]; nodes: number; timedOut: boolean } {
-  const grid = new Array<number>(81).fill(0)
-  const masks = new Int16Array(81)
-  for (let i = 0; i < 81; i++) {
-    const v = givens[i] ?? 0
-    grid[i] = v >= 1 && v <= 9 ? v : 0
-    masks[i] = grid[i] === 0 ? 0x1ff : 0
-  }
-
-  const peers = buildPeers(regions)
+  const size = n * n
+  const grid = initialGrid(givens, size, n)
+  const units = makeUnits(regions, n)
+  const unitOf = buildUnitIndex(units, size)
   const solutions: number[][] = []
   let nodes = 0
   let timedOut = false
-  let impossible = false
 
-  for (let i = 0; i < 81 && !impossible; i++) {
-    const v = grid[i]!
-    if (v === 0) continue
-    const bit = 1 << (v - 1)
-    for (const p of peers[i]!) {
-      const pv = grid[p]!
-      if (pv !== 0) {
-        if (pv === v) {
-          impossible = true
-          break
-        }
-        continue
-      }
-      masks[p] = masks[p]! & ~bit
-      if (masks[p] === 0) {
-        impossible = true
-        break
-      }
+  const candidatesOf = (i: number): number[] => {
+    if (grid[i] !== 0) return []
+    const used = new Set<number>()
+    for (const u of unitOf[i]!) {
+      for (const j of units[u]!) if (grid[j] !== 0) used.add(grid[j]!)
     }
-  }
-
-  const propagateFrom = (start: number): boolean => {
-    const queue = [start]
-    while (queue.length) {
-      const i = queue.pop()!
-      const bit = 1 << (grid[i]! - 1)
-      for (const p of peers[i]!) {
-        if (grid[p] !== 0) {
-          if (grid[p] === grid[i]) return false
-          continue
-        }
-        if ((masks[p]! & bit) === 0) continue
-        masks[p] = masks[p]! & ~bit
-        const m = masks[p]!
-        if (m === 0) return false
-        if ((m & (m - 1)) === 0) {
-          grid[p] = 31 - Math.clz32(m) + 1
-          masks[p] = 0
-          queue.push(p)
-        }
-      }
-    }
-    return true
+    const out: number[] = []
+    for (let v = 1; v <= n; v++) if (!used.has(v)) out.push(v)
+    return out
   }
 
   const dfs = (): void => {
@@ -119,81 +62,84 @@ function search(
       timedOut = true
       return
     }
+    if (!propagate(grid, regions, undefined, n)) return
+
     let choice = -1
-    let bestCount = 10
-    for (let i = 0; i < 81; i++) {
+    let best = Infinity
+    let bestValues: number[] = []
+    for (let i = 0; i < size; i++) {
       if (grid[i] !== 0) continue
-      const c = popcount(masks[i]!)
-      if (c === 0) return
-      if (c < bestCount) {
-        bestCount = c
+      const cands = candidatesOf(i)
+      if (cands.length === 0) return
+      if (cands.length < best) {
+        best = cands.length
         choice = i
-        if (c === 1) break
+        bestValues = cands
+        if (best === 1) break
       }
     }
+
     if (choice < 0) {
-      solutions.push(Array.from(grid))
+      if (isValidSolution(grid, regions, n)) solutions.push(Array.from(grid))
       return
     }
 
-    const gsave = grid.slice()
-    const msave = masks.slice()
-    let bits = masks[choice]!
-    while (bits) {
-      const bit = bits & -bits
-      bits ^= bit
-      for (let i = 0; i < 81; i++) {
-        grid[i] = gsave[i]!
-        masks[i] = msave[i]!
-      }
-      const v = 31 - Math.clz32(bit) + 1
+    const backup = Array.from(grid)
+    for (const v of bestValues) {
+      if (solutions.length >= limit || timedOut) return
       grid[choice] = v
-      masks[choice] = 0
-      if (propagateFrom(choice)) dfs()
-      if (solutions.length >= limit || timedOut) break
-    }
-    for (let i = 0; i < 81; i++) {
-      grid[i] = gsave[i]!
-      masks[i] = msave[i]!
+      dfs()
+      for (let i = 0; i < size; i++) grid[i] = backup[i]!
     }
   }
-
-  if (!impossible) dfs()
+  dfs()
   return { solutions, nodes, timedOut }
 }
 
 export function countSolutions(
-  givens: number[],
-  regions: number[],
+  givens: ArrayLike<number>,
+  regions: ArrayLike<number>,
   limit = 2,
   maxNodes = 300_000,
+  n = squareSize(givens.length) || 9,
 ): CountOutcome {
-  const out = search(givens, regions, limit, maxNodes)
+  const out = search(givens, regions, limit, maxNodes, n)
   return { count: out.solutions.length, nodes: out.nodes, timedOut: out.timedOut }
 }
 
+/** 求一组解（题库生成器用；区分「无解」与「超时」看返回 null 即可） */
 export function findSolution(
-  givens: number[],
-  regions: number[],
+  givens: ArrayLike<number>,
+  regions: ArrayLike<number>,
   maxNodes = 2_000_000,
+  n = squareSize(givens.length) || 9,
 ): number[] | null {
-  const out = search(givens, regions, 1, maxNodes)
+  const out = search(givens, regions, 1, maxNodes, n)
   return out.solutions[0] ?? null
 }
 
 export function solvePuzzle(puzzle: Puzzle, maxNodes = 1_500_000): SolveResult {
   const p = puzzle as SudokuPuzzle
-  if (!p.givens || !p.regions || p.givens.length !== 81) {
+  const n = puzzleSize(p)
+  const size = n * n
+  if (
+    !n ||
+    n > 36 ||
+    !p.givens ||
+    !p.regions ||
+    p.givens.length !== size ||
+    p.regions.length !== size
+  ) {
     return { solved: false, solution: null, nodes: 0, timedOut: false }
   }
-  const byRules = solveByRules(p.givens, p.regions, true, 120)
+  const byRules = solveByRules(p.givens, p.regions, true, 240, n)
   if (byRules.ok && byRules.solution) {
     return { solved: true, solution: makeState(p, byRules.solution), nodes: 0, timedOut: false }
   }
   if (byRules.contradiction) {
     return { solved: false, solution: null, nodes: 0, timedOut: false }
   }
-  const out = search(p.givens, p.regions, 1, maxNodes)
+  const out = search(p.givens, p.regions, 1, maxNodes, n)
   const solution = out.solutions[0]
   return {
     solved: !!solution,

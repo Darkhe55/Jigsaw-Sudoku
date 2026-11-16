@@ -1,6 +1,7 @@
 # 异形数独 Jigsaw Sudoku
 
 一个基于 Web 的异形数独（Jigsaw Sudoku）谜题游戏，原生 SVG 渲染，内置逻辑解题器。
+支持标准 9×9 不规则宫，也支持从图片导入 14×14 等大尺寸异形题面。
 
 ## 在线体验
 
@@ -15,7 +16,7 @@ npm start
 
 ## 游戏规则
 
-- 在 9×9 格中填入 1..9，每行、每列数字不重复
+- 在 N×N 格中填入 1..N（9×9 用 1..9，14×14 用 1..9 与 A..E），每行、每列数字不重复
 - 每个由粗线围成的不规则宫内数字也不能重复
 - 题面预填数字不能修改
 
@@ -23,10 +24,12 @@ npm start
 
 | 操作 | 说明 |
 |------|------|
-| 左键点格 | 选中格子 |
-| 数字键 1–9 / 0 或 Backspace | 填数 / 清除 |
-| 右键点格 | 清除该格 |
+| 左键点格 | 选中格子；未选数字面板时按 1→2→…→N→空 循环填数 |
+| 数字面板 | 先点一个数字，再点格子即直接填该数；「清除」用于擦除；再点一次数字回到循环模式 |
+| 数字键 1–9 | 给选中格填 1–9（14×14 时 Shift+A…E 填 10–14） |
+| 0 / Backspace / Delete | 清除选中格（没有选中格时 `0` 为视图复位） |
 | 方向键 | 移动选中格 |
+| 右键点格 | 清除该格 |
 | 滚轮 / 中键拖拽 | 缩放 / 平移画布 |
 | Z / Shift+Z / Y | 撤销 / 重做 |
 | C / H / S / Esc | 检查 / 提示一格 / 显示解 / 清空 |
@@ -39,7 +42,9 @@ npm start
 
 ## 功能
 
-- **题库**：内置多道题，题目均校验唯一解
+- **题库**：内置多道 9×9 异形题，题目均校验唯一解；图片导入的大尺寸题放在独立文件里，不会被重新生成覆盖
+- **任意宫形**：`regions` 每格一个宫号，宫的数量与形状都不要求规则；渲染、校验、求解、逻辑回放全部按实际宫形工作
+- **大尺寸支持**：任意正方形 N×N（4..36，实际使用 9 / 14），渲染/命中/校验/求解/逻辑回放按实际宽高工作
 - **实时校验**：冲突与违规位置即时高亮，满足的条件同步变灰
 - **逻辑解题**：规则引擎逐帧回放，显示每一步理由；回放中按钮变为停止，按 `P` 暂停/继续
 - **提示一格 / 显示解**：提示优先揭示所有解一致的格子，显示解直接填入可行答案
@@ -47,6 +52,8 @@ npm start
 - **进度保存**：自动保存当前题目进度，刷新不丢失
 - **音效特效**：Web Audio 合成拨弦、水滴与落子动画，无外部音频资源
 - **缩放/平移**：滚轮缩放，中键或 `Shift` 拖拽平移
+
+> 自定义题板保持关闭：不规则宫没法用「填数字」编辑器画出来，请用图片导入。
 
 ## 技术栈
 
@@ -66,31 +73,47 @@ src/
     audio.ts / fx.ts              音效与落子特效
   game/
     adapter.ts                    游戏规则接入
-    rules.ts                      推理规则
+    rules.ts                      推理规则（任意 N / 任意宫形）
     logic.ts                      逻辑解题回放
     render.ts / state.ts          SVG 渲染与盘面状态
     validate.ts / solver.ts       实时校验与回溯求解
-    puzzles.ts / puzzles-data.ts  题库加载与静态题库
+    puzzles.ts                    题库加载与解码（任意 N / 任意宫形）
+    puzzles-data.ts               npm run gen 生成的内置题（会被覆盖）
+    imported-puzzles.ts           图片导入题（不影响内置题，不被 gen 覆盖）
 ```
+
+## 大尺寸 / 不规则宫支持与限制
+
+- **尺寸**：只支持正方形题面，边长 4..36；内置题是 9×9，图片导入实测 14×14。
+- **数值显示**：1–9 显示为数字，10–36 显示为 A–Z（`board` 编码用 36 进制，一格一个字符）。
+- **宫**：宫数不限（不要求等于 N，但有效题面通常等于 N），宫号支持 >8，宫形完全由 `regions` 逐格给出。
+- **编码兼容**：`board = givens|regions`，每格 1 个 36 进制字符。旧 9×9 题库里的 `'0'..'9'` 与新编码完全一致，
+  无需迁移；存档（`cells` 串）同理。
+- **渲染**：格距按边长自动缩放（9×9 52px，14×14 33px），大盘面线宽自动变细，每个不规则宫独立填色。
+- **逻辑解题**：大棋盘反证/回溯有预算上限，帧数多时回放会自动缩短单帧间隔（整段约 15–30 秒）；
+  极端题面推不满时只会给出部分回放（状态栏会提示）。
+- **求解**：回溯求解器任意 N / 任意宫形通用，但超大题面可能超时；导入题会带参考解，所以「提示一格 / 显示解」不依赖回溯。
+- **未覆盖**：非正方形、N>36 的题面不在支持范围；14×14 以上仅做过 14×14 实测。
 
 ## 从图片导入题库
 
 ```bash
-npm run import-image -- month.png --verify              # 预览识别结果并校验唯一解
-npm run import-image -- month.png --append              # 写入题库（需唯一解）
-npm run import-image -- puzzle.png --size 9 --append    # 指定网格尺寸
-npm run import-image -- puzzle.png --json out.json      # 非 9×9 题面导出 JSON
-npm run import-image -- puzzle.png --map "3,4=5,5,1=7"  # 人工覆盖误识别的格子
-npm run import-image -- puzzle.png --box 3              # 强制按 3×3 标准宫（跳过宫形识别）
+npm run import-image -- month.png --verify                    # 预览识别结果与宫形，并校验唯一解
+npm run import-image -- month.png --append                     # 追加到识图题库（需唯一解）
+npm run import-image -- puzzle.png --box 3                     # 宫形识别失败时强制按 3×3 标准宫
+npm run import-image -- puzzle.png --json out.json             # 只导出 JSON，不写题库
+npm run import-image -- puzzle.png --map "3,4=G,5,1=7"         # 人工覆盖误识别的格子
 ```
 
 说明：
 
-- Playwright + Edge 自动识别网格线、粗宫界线（四连通洪泛出宫形）与数字/字母字形。
-- `--map` 人工覆盖格子，坐标 0 基，格式 `x,y=字符`（列,行）；`--box` 可在宫形识别失败时强制标准宫。
-- `--verify` 调项目 solver 校验唯一解并生成参考解；`--append` 写入 `src/game/puzzles-data.ts`。
-- 当前游戏题库只支持 9×9（`src/game/puzzles.ts` 固定 81 格），其他尺寸只能预览或用 `--json` 导出。
-- `npm run gen` 会重新生成 `puzzles-data.ts` 并覆盖导入的题，重要题面请先另存。
+- Playwright + Edge 自动识别网格线、粗宫界线（每条格线量“墨量”，2-means 分粗细，再四连通洪泛得到宫形）与数字/字母字形。
+- 终端会打印识别结果与宫形矩阵（每个宫的格数应等于 N），`--verify` 调项目 solver 校验唯一解并生成参考解。
+- `--map` 人工覆盖格子，坐标 0 基，格式 `x,y=字符`（列,行）；`--box N` 可在宫形识别失败时强制标准宫。
+- `--append` 把题面（含不规则宫编号）写入 `src/game/imported-puzzles.ts`，刷新后即出现在左侧题库并可游玩；
+  写入用 36 进制编码，所以 14×14 的 10–14（A–E）与 14 个宫都能存。
+- `npm run gen` 只重写 `src/game/puzzles-data.ts`（内置题），不会覆盖 `imported-puzzles.ts`。
+- 识别依赖图片字体与模板库近似度，个别格可能需要 `--map` 修正后重跑。
 
 ## 命令
 
@@ -98,8 +121,8 @@ npm run import-image -- puzzle.png --box 3              # 强制按 3×3 标准�
 npm run dev       # 开发服务
 npm start         # 开发服务 + 自动打开浏览器
 npm run build     # tsc --noEmit + vite build
-npm run gen       # 重新生成题库
-npm run check     # 审计题库
+npm run gen       # 重新生成内置题库（9×9）
+npm run check     # 审计题库（内置 + 识图导入，任意 N / 任意宫形）
 npm run verify    # 参考解、逻辑回放与交互验证
 npm run audit     # 逐题审计逻辑解题
 ```
